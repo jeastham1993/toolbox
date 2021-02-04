@@ -1,0 +1,114 @@
+# Copyright 2019-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: |
+  The AWS CloudFormation template for creating Cloudformation configuration to allow for cross-account deployments. This includes and S3 bucket to store artifacts and a KMS key for encryption.
+
+Parameters:
+  DeploymentArtifactBucketName:
+    Description : The name to use for the bucket that will store deployment artifacts.
+    Type: String
+    ConstraintDescription: Must be at least 1 character long.
+    MinLength: 1
+
+  DevAccountId:
+    Description : Account ID of the dev AWS account that will contain all development deployments
+    Type: String
+    ConstraintDescription: Must be a valid AWS Account ID without hyphens.
+    AllowedPattern: '\d{12}'
+    MinLength: 12
+    MaxLength: 12
+
+  ProductionAccountId:
+    Description : Account ID of the dev AWS account that will contain all production deployments
+    Type: String
+    ConstraintDescription: Must be a valid AWS Account ID without hyphens.
+    AllowedPattern: '\d{12}'
+    MinLength: 12
+    MaxLength: 12
+
+Resources:
+  DeploymentArtifactS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub ${DeploymentArtifactBucketName}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'aws:kms'
+              KMSMasterKeyID: !Ref BucketEncryptionKey
+    DeletionPolicy: Delete
+
+  DeploymentArtifactBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref DeploymentArtifactS3Bucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetBucket*'
+              - 's3:List*'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref DeploymentArtifactS3Bucket
+            Principal:
+              AWS:
+              - !Sub "arn:aws:iam::${DevAccountId}:root"
+              - !Sub "arn:aws:iam::${ProductionAccountId}:root"
+          - Action:
+              - 's3:GetObject*'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref DeploymentArtifactS3Bucket
+                - /*
+            Principal:
+              AWS:
+              - !Sub "arn:aws:iam::${DevAccountId}:root"
+              - !Sub "arn:aws:iam::${ProductionAccountId}:root"
+
+  BucketEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: false
+      Description: EncryptionKeyForBucket
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-policy
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+          Action: kms:*
+          Resource: '*'
+        - Sid: Allow Dev and Prod Access
+          Effect: Allow
+          Principal:
+            AWS:
+            - !Sub arn:aws:iam::${DevAccountId}:role/CrossAccountCloudFormationExecutionRole
+            - !Sub arn:aws:iam::${DevAccountId}:role/CrossAccountDeploymentRole
+            - !Sub arn:aws:iam::${ProductionAccountId}:role/CrossAccountCloudFormationExecutionRole
+            - !Sub arn:aws:iam::${ProductionAccountId}:role/CrossAccountDeploymentRole
+          Action:
+          - kms:Decrypt
+          - kms:DescribeKey
+          Resource: '*'
+  

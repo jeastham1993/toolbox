@@ -1,0 +1,183 @@
+# Copyright 2019-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: |
+  The AWS CloudFormation template for creating Cloudformation execution role to be used by
+  Cloudformation Service to create resources defined by serverless.yml.
+  This role is passed to cloudformation service by Cross Account Role
+
+Parameters:
+
+  ArtifactBucketName:
+    Description : The name of the AWS bucket that artifacts are deployed to.
+    Type: String
+    ConstraintDescription: Must be at least one charachter.
+    MinLength: 1
+
+  KmsArn:
+    Description : The ARN of the KMS key that the S3 bucket uses for encryption.
+    Type: String
+    ConstraintDescription: Must be at least one charachter.
+    MinLength: 1
+
+  CrossAccountDeploymentRoleName:
+    Description : name ARN of the cross account deployment role created in step 1.
+    Type: String
+    ConstraintDescription: Must be at least one charachter.
+    MinLength: 1
+    Default: CrossAccountDeploymentRole
+
+  CloudFormationExecutionRoleName:
+    Description : The name of the cloud formation execution role created in step 1.
+    Type: String
+    ConstraintDescription: Must be at least one charachter.
+    MinLength: 1
+    Default: CrossAccountCloudFormationExecutionRole
+
+Resources:
+
+  CloudFormationExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows pipeline in TOOLS account to deploy API Gateway, Lambda
+      ManagedPolicyName: CrossAccountCloudFormationExecutionPolicy
+      Roles:
+        - CrossAccountCloudFormationExecutionRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/*'
+          - Effect: Allow
+            Action:
+              - iam:GetRole
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:PutRolePolicy
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/*'
+          - Sid: ApiGatewayFullAccess
+            # API Gateway
+            Effect: Allow
+            Action:
+              - apigateway:*
+            Resource: '*'
+          - Sid: LambdaFullAccess
+            # Lambda
+            Effect: Allow
+            Action:
+              - lambda:*
+            Resource: '*'
+          - Sid: DynamoDBFullAccess
+            # DynamoDB
+            Effect: Allow
+            Action:
+              - dynamodb:*
+            Resource: '*'
+          - Sid: AmazonEventBridgeFullAccess
+            # EventBridge
+            Effect: Allow
+            Action:
+              - events:*
+            Resource: '*'
+          - Sid: CodeDeployFullAccess
+            # EventBridge
+            Effect: Allow
+            Action:
+              - codedeploy:*
+            Resource: '*'
+          - Sid: S3ArtifactBucketAccess
+            # EventBridge
+            Effect: Allow
+            Action:
+              - s3:GetObject*
+              - s3:GetBucket*
+              - s3:List*
+            Resource:
+              - !Sub "arn:aws:s3:::${ArtifactBucketName}"
+              - !Sub "arn:aws:s3:::${ArtifactBucketName}/*"
+          - Sid: KMSAccess
+            # EventBridge
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource:
+              - !Sub ${KmsArn}
+          - Sid: Cloudwatch
+            # To access cloudwatch logs
+            Effect: Allow
+            Action:
+              - cloudwatch:*
+              - logs:*
+              - events:*
+            Resource: '*'
+          - Sid: CloudFormation
+            Effect: Allow
+            Action:
+              - "cloudformation:CreateStack"
+              - "cloudformation:DescribeStack*"
+              - "cloudformation:GetStackPolicy"
+              - "cloudformation:GetTemplate*"
+              - "cloudformation:SetStackPolicy"
+              - "cloudformation:UpdateStack"
+              - "cloudformation:ValidateTemplate"
+            Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*/*"
+          - Sid: CloudFormationStack
+            Effect: Allow
+            Action:
+              - "cloudformation:CreateChangeSet"
+            Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31"
+
+  CrossAccountArtifactReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy that allows cross account artifact read.
+      ManagedPolicyName: CrossAccountArtifactReadPolicy
+      Roles:
+        - !Sub ${CrossAccountDeploymentRoleName}
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: GetBucket
+            # Needed for creating Roles for Lambdas, EC2 instances and other services
+            Effect: Allow
+            Action:
+              - s3:GetBucket*
+              - s3:ListBucket
+            Resource: !Sub 'arn:aws:s3:::${ArtifactBucketName}'
+          - Sid: GetPutObjects
+            # Needed for creating Roles for Lambdas, EC2 instances and other services
+            Effect: Allow
+            Action:
+              - s3:GetObject*
+              - s3:Put*
+            Resource: !Sub 'arn:aws:s3:::${ArtifactBucketName}/*'
+          - Sid: KMSAccess
+            # Needed for creating Roles for Lambdas, EC2 instances and other services
+            Effect: Allow
+            Action:
+              - kms:DescribeKey
+              - kms:GenerateDataKey*
+              - kms:Encrypt
+              - kms:ReEncrypt*
+              - kms:Decrypt
+            Resource: !Sub ${KmsArn}

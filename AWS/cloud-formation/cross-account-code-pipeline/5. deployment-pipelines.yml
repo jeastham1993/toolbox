@@ -1,0 +1,1054 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+    DevelopmentAccountId:
+        Type: String
+        Description: The AWS Account ID for the development account where the application is to be deployed 
+    ProductionAccountId:
+        Type: String
+        Description: The AWS Account ID for the production account where the application is to be deployed
+    ApplicationBuildSpecPath:
+        Type: String
+        Description: The path to the buildspec file for the main application.
+        Default: src/backend/src/buildspec.yaml
+    InfrastructureTestBuildSpecPath:
+        Type: String
+        Description: The path to the buildspec file for the infrastructure tests.
+        Default: src/backend/test/infrastructure-tests/buildspec.yaml
+    FunctionalTestBuildSpecPath:
+        Type: String
+        Description: The path to the buildspec file for the functional tests.
+        Default: src/backend/test/functional-tests/buildspec.yaml
+    ArtifactEncryptionKeyArn:
+        Type: String
+        Description: The ARN of the Customer Managed CMK to be used as artifact encryption key
+    ArtifactBucketName:
+        Type: String
+        Description: The name of the S3 bucket where the deployment artifacts are to be stored
+    ServiceName:
+        Type: String
+        Description: The name of the deployed service.
+    SendReleaseEmailsTo:
+        Type: String
+        Description: The email address release confirmation emails should be sent to.
+    BitbucketConnectionArn:
+        Type: String
+        Description: The ARN of the Bitbucket Codestar connection ARN.
+    BitbucketRepositoryId:
+        Type: String
+        Description: The full repository id of the Bitbucket repo to use.
+    MainBranchName:
+        Type: String
+        Description: The name of the branch to use for production releases.
+        Default: main
+    DevelopmentBranchName:
+        Type: String
+        Description: The name of the branch to use for development releases.
+        Default: development
+    InfrastructureTestFunctionName:
+        Type: String
+        Description: The name of the lambda function to use when executing infrastructure tests.
+        Default: InfrastructureTestFunction
+    FunctionalTestFunctionName:
+        Type: String
+        Description: The name of the lambda function to use when executing functional tests.
+        Default: SecurityTestFunction
+    ApplicationBuildOutputTemplate:
+        Type: String
+        Description: The path to the template.yaml file that the SAM package build step outputs for the main application.
+        Default: src/backend/src/packaged-template.yaml
+    InfrastructureTestBuildOutputTemplate:
+        Type: String
+        Description: The path to the template.yaml file that the SAM package build step outputs for the infrastructure tests.
+        Default: src/backend/test/infrastructure-tests/packaged-template.yaml
+    FunctionalTestBuildOutputTemplate:
+        Type: String
+        Description: The path to the template.yaml file that the SAM package build step outputs for the functional tests.
+        Default: src/backend/test/functional-tests/packaged-template.yaml
+    DeploymentRegion:
+        Type: String
+        Default: eu-west-2
+        AllowedValues:
+        - eu-west-1
+        - eu-west-2
+
+Resources:
+    ArtifactEncryptionKeyAlias:
+        Type: AWS::KMS::Alias
+        Properties:
+            AliasName: alias/key/artifact-key
+            TargetKeyId: !Ref ArtifactEncryptionKeyArn
+
+    ApplicationCodeBuildProject:
+        Type: AWS::CodeBuild::Project
+        Properties:
+            Name: application-build-project
+            Artifacts:
+                Type: CODEPIPELINE
+            EncryptionKey: !Ref ArtifactEncryptionKeyArn
+            Environment:
+                ComputeType: BUILD_GENERAL1_SMALL
+                Image: aws/codebuild/standard:4.0
+                PrivilegedMode: false
+                Type: LINUX_CONTAINER 
+                EnvironmentVariables:
+                - Name: S3_BUCKET
+                  Type: PLAINTEXT
+                  Value: !Sub ${ArtifactBucketName}
+            ServiceRole: !Ref ApplicationCodeBuildProjectRole
+            Source:
+                Type: CODEPIPELINE
+                BuildSpec: !Sub ${ApplicationBuildSpecPath}
+
+    InfrastructureTestCodeBuildProject:
+        Type: AWS::CodeBuild::Project
+        Properties:
+            Name: infrastructure-test-build-project
+            Artifacts:
+                Type: CODEPIPELINE
+            EncryptionKey: !Ref ArtifactEncryptionKeyArn
+            Environment:
+                ComputeType: BUILD_GENERAL1_SMALL
+                Image: aws/codebuild/standard:4.0
+                PrivilegedMode: false
+                Type: LINUX_CONTAINER 
+                EnvironmentVariables:
+                - Name: S3_BUCKET
+                  Type: PLAINTEXT
+                  Value: !Sub ${ArtifactBucketName}
+            ServiceRole: !Ref ApplicationCodeBuildProjectRole
+            Source:
+                Type: CODEPIPELINE
+                BuildSpec: !Sub ${InfrastructureTestBuildSpecPath}
+
+    FunctionalTestCodeBuildProject:
+        Type: AWS::CodeBuild::Project
+        Properties:
+            Name: functional-test-build-project
+            Artifacts:
+                Type: CODEPIPELINE
+            EncryptionKey: !Ref ArtifactEncryptionKeyArn
+            Environment:
+                ComputeType: BUILD_GENERAL1_SMALL
+                Image: aws/codebuild/standard:4.0
+                PrivilegedMode: false
+                Type: LINUX_CONTAINER 
+                EnvironmentVariables:
+                - Name: S3_BUCKET
+                  Type: PLAINTEXT
+                  Value: !Sub ${ArtifactBucketName}
+            ServiceRole: !Ref ApplicationCodeBuildProjectRole
+            Source:
+                Type: CODEPIPELINE
+                BuildSpec: !Sub ${FunctionalTestBuildSpecPath}
+
+    ProductionReleasePipeline:
+        Type: AWS::CodePipeline::Pipeline
+        DependsOn:
+            - CrossAccountPipelineRole
+            - CrossAccountPipelineRolePolicy
+        Properties:
+            Name: ProductionReleasePipeline
+            RoleArn: !GetAtt CrossAccountPipelineRole.Arn
+            ArtifactStore:
+                EncryptionKey: 
+                    Id: !Ref ArtifactEncryptionKeyArn
+                    Type: KMS
+                Location: !Ref ArtifactBucketName
+                Type: S3
+            Stages:
+                - 
+                    Name: Source
+                    Actions:
+                        - 
+                            ActionTypeId:
+                                Category: Source
+                                Owner: AWS
+                                Provider: CodeStarSourceConnection
+                                Version: '1'
+                            Configuration:
+                                ConnectionArn: !Ref BitbucketConnectionArn
+                                FullRepositoryId: !Ref BitbucketRepositoryId
+                                BranchName: !Ref MainBranchName
+                                DetectChanges: true
+                            Name: BitbucketSource
+                            OutputArtifacts:
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineSourceActionRole.Arn
+                            RunOrder: 1
+                - 
+                    Name: Build
+                    Actions:
+                        -
+                            Name: BuildApplication
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref ApplicationCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                        -
+                            Name: BuildInfrastructureTests
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref InfrastructureTestCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: InfrastructureTestBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                        -
+                            Name: BuildFunctionalTests
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref FunctionalTestCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: FunctionalTestBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                -
+                    Name: Deploy_Alpha
+                    Actions:
+                        - 
+                            Name: DeployApp
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-beta-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                                TemplatePath: !Sub 'ApplicationBuildOutput::${ApplicationBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "beta"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: DeployInfrastructureTests
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: InfrastructureTestBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-infra-test-beta-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                                TemplatePath: !Sub 'InfrastructureTestBuildOutput::${InfrastructureTestBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "beta"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+                -
+                    Name: Execute_Tests
+                    Actions:
+                        - 
+                            Name: ExecuteInfrastructureTests
+                            ActionTypeId:
+                                Category: Invoke
+                                Owner: AWS
+                                Version: "1"
+                                Provider: Lambda
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                FunctionName: !Sub beta-${InfrastructureTestFunctionName}
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: ExecuteFunctionalTests
+                            ActionTypeId:
+                                Category: Invoke
+                                Owner: AWS
+                                Version: "1"
+                                Provider: Lambda
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                FunctionName: !Sub beta-${FunctionalTestFunctionName}
+                            OutputArtifacts: []
+                            RunOrder: 1
+                -
+                    Name: Teardown_Alpha
+                    Actions:
+                        - 
+                            Name: TeardownApp
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: DELETE_ONLY
+                                StackName: !Sub ${ServiceName}-beta-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: TeardownInfrastructureTests
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: InfrastructureTestBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: DELETE_ONLY
+                                StackName: !Sub ${ServiceName}-infra-test-beta-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                            OutputArtifacts: []
+                            RunOrder: 1
+                -
+                    Name: Deploy_Staging
+                    Actions:
+                        - 
+                            Name: Deploy_Staging_Account
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !Sub arn:aws:iam::${DevelopmentAccountId}:role/CrossAccountDeploymentRole
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-staging-${DeploymentRegion}
+                                RoleArn: !Sub arn:aws:iam::${DevelopmentAccountId}:role/CrossAccountCloudFormationExecutionRole
+                                TemplatePath: !Sub 'ApplicationBuildOutput::${ApplicationBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "staging"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: Deploy_Functional_Tests
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: FunctionalTestBuildOutput
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-functional-tests-staging-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                                TemplatePath: !Sub 'FunctionalTestBuildOutput::${FunctionalTestBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "staging"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: Wait_For_Staging_Approval
+                            ActionTypeId:
+                                Category: Approval
+                                Owner: AWS
+                                Version: "1"
+                                Provider: Manual
+                            Configuration:
+                                NotificationArn: !Ref ReleaseApprovalSnsTopic
+                                CustomData: Please confirm latest production release.
+                            InputArtifacts: []
+                            OutputArtifacts: []
+                            RunOrder: 2
+  
+                -
+                    Name: Deploy_Prod
+                    Actions:
+                        - 
+                            Name: Deploy_To_Production
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !Sub arn:aws:iam::${ProductionAccountId}:role/CrossAccountDeploymentRole
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-production-${DeploymentRegion}
+                                RoleArn: !Sub arn:aws:iam::${ProductionAccountId}:role/CrossAccountCloudFormationExecutionRole
+                                TemplatePath: !Sub 'ApplicationBuildOutput::${ApplicationBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "production"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+    
+    DevelopmentReleasePipeline:
+        Type: AWS::CodePipeline::Pipeline
+        DependsOn:
+            - CrossAccountPipelineRole
+            - CrossAccountPipelineRolePolicy
+        Properties:
+            Name: DevelopmentReleasePipeline
+            RoleArn: !GetAtt CrossAccountPipelineRole.Arn
+            ArtifactStore:
+                EncryptionKey: 
+                    Id: !Ref ArtifactEncryptionKeyArn
+                    Type: KMS
+                Location: !Ref ArtifactBucketName
+                Type: S3
+            Stages:
+                - 
+                    Name: Source
+                    Actions:
+                        - 
+                            ActionTypeId:
+                                Category: Source
+                                Owner: AWS
+                                Provider: CodeStarSourceConnection
+                                Version: '1'
+                            Configuration:
+                                ConnectionArn: !Ref BitbucketConnectionArn
+                                FullRepositoryId: !Ref BitbucketRepositoryId
+                                BranchName: !Ref DevelopmentBranchName
+                                DetectChanges: true
+                            Name: BitbucketSource
+                            OutputArtifacts:
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineSourceActionRole.Arn
+                            RunOrder: 1
+                - 
+                    Name: Build
+                    Actions:
+                        -
+                            Name: BuildApplication
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref ApplicationCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                        -
+                            Name: BuildInfrastructureTests
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref InfrastructureTestCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: InfrastructureTestBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                        -
+                            Name: BuildFunctionalTests
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref FunctionalTestCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: FunctionalTestBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                -
+                    Name: Deploy_Alpha
+                    Actions:
+                        - 
+                            Name: DeployApp
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-dev-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                                TemplatePath: !Sub 'ApplicationBuildOutput::${ApplicationBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "dev"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: DeployInfrastructureTests
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: InfrastructureTestBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-infra-test-dev-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                                TemplatePath: !Sub 'InfrastructureTestBuildOutput::${InfrastructureTestBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "dev"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+                -
+                    Name: Execute_Tests
+                    Actions:
+                        - 
+                            Name: ExecuteInfrastructureTests
+                            ActionTypeId:
+                                Category: Invoke
+                                Owner: AWS
+                                Version: "1"
+                                Provider: Lambda
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                FunctionName: !Sub dev-${InfrastructureTestFunctionName}
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: ExecuteFunctionalTests
+                            ActionTypeId:
+                                Category: Invoke
+                                Owner: AWS
+                                Version: "1"
+                                Provider: Lambda
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                FunctionName: !Sub dev-${FunctionalTestFunctionName}
+                            OutputArtifacts: []
+                            RunOrder: 1
+                -
+                    Name: Teardown_Alpha
+                    Actions:
+                        - 
+                            Name: TeardownApp
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: DELETE_ONLY
+                                StackName: !Sub ${ServiceName}-dev-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: TeardownInfrastructureTests
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: InfrastructureTestBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: DELETE_ONLY
+                                StackName: !Sub ${ServiceName}--infra-test-dev-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                            OutputArtifacts: []
+                            RunOrder: 1
+                -
+                    Name: Deploy_Dev
+                    Actions:
+                        - 
+                            Name: Deploy_Dev_Account
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                                - Name: SourceArtifact
+                            RoleArn: !Sub arn:aws:iam::${DevelopmentAccountId}:role/CrossAccountDeploymentRole
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-dev-${DeploymentRegion}
+                                RoleArn: !Sub arn:aws:iam::${DevelopmentAccountId}:role/CrossAccountCloudFormationExecutionRole
+                                TemplatePath: !Sub 'ApplicationBuildOutput::${ApplicationBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "dev"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+
+                        - 
+                            Name: Deploy_Dev_Functional_Tests
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: CloudFormation
+                            InputArtifacts:
+                                - Name: FunctionalTestBuildOutput
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                ActionMode: CREATE_UPDATE
+                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                                StackName: !Sub ${ServiceName}-functional-tests-dev-${DeploymentRegion}
+                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
+                                TemplatePath: !Sub 'FunctionalTestBuildOutput::${FunctionalTestBuildOutputTemplate}'
+                                ParameterOverrides: !Sub | 
+                                    { 
+                                        "ApplicationEnvironment": "dev"
+                                    }
+                            OutputArtifacts: []
+                            RunOrder: 1
+
+    ############################
+    ###   Release Approval   ###
+    ############################
+    ReleaseApprovalSnsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: "ProductionReleaseApproval"
+        Subscription:
+          - Endpoint: !Sub ${SendReleaseEmailsTo}
+            Protocol: "email"
+
+    #################
+    ###   ROLES   ###
+    #################
+
+    ApplicationCodeBuildProjectRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal:
+                        Service: codebuild.amazonaws.com
+                Version: '2012-10-17'
+
+    ApplicationCodeBuildProjectRolePolicy:
+        Type: AWS::IAM::Policy
+        Properties:
+            PolicyName: !Sub ApplicationCodeBuildProjectRolePolicy-${AWS::StackName}
+            Roles: 
+                - !Ref ApplicationCodeBuildProjectRole
+            PolicyDocument: !Sub |
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": [
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ApplicationCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ApplicationCodeBuildProject}*:*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${InfrastructureTestCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${InfrastructureTestCodeBuildProject}*:*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${FunctionalTestCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${FunctionalTestCodeBuildProject}*:*"
+                            ]
+                        },
+                        {
+                            "Action": [
+                                "kms:Decrypt",
+                                "kms:DescribeKey",
+                                "kms:Encrypt",
+                                "kms:ReEncrypt*",
+                                "kms:GenerateDataKey*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": "${ArtifactEncryptionKeyArn}"
+                        },
+                        {
+                            "Action": [
+                                "s3:GetObject*",
+                                "s3:GetBucket*",
+                                "s3:List*",
+                                "s3:DeleteObject*",
+                                "s3:PutObject*",
+                                "s3:Abort*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": [
+                                "arn:aws:s3:::${ArtifactBucketName}",
+                                "arn:aws:s3:::${ArtifactBucketName}/*"
+                            ]
+                        }
+                    ]
+                }
+
+    CrossAccountPipelineRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal:
+                        Service: codepipeline.amazonaws.com
+                Version: '2012-10-17'
+
+    CrossAccountPipelineRolePolicy:
+        Type: AWS::IAM::Policy
+        Properties:
+            PolicyName: !Sub CrossAccountPipelineRolePolicy-${AWS::StackName}
+            Roles: 
+                - !Ref CrossAccountPipelineRole
+            PolicyDocument: !Sub |
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": [
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ApplicationCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ApplicationCodeBuildProject}*:*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${InfrastructureTestCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${InfrastructureTestCodeBuildProject}*:*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${FunctionalTestCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${FunctionalTestCodeBuildProject}*:*"
+                            ]
+                        },
+                        {
+                            "Action": [
+                                "kms:Decrypt",
+                                "kms:DescribeKey",
+                                "kms:Encrypt",
+                                "kms:ReEncrypt*",
+                                "kms:GenerateDataKey*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": "${ArtifactEncryptionKeyArn}"
+                        },
+                        {
+                            "Action": [
+                                "s3:GetObject*",
+                                "s3:GetBucket*",
+                                "s3:List*",
+                                "s3:DeleteObject*",
+                                "s3:PutObject*",
+                                "s3:Abort*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": [
+                                "arn:aws:s3:::${ArtifactBucketName}",
+                                "arn:aws:s3:::${ArtifactBucketName}/*"
+                            ]
+                        },
+                        {
+                            "Action": [
+                                "codestar:*",
+                                "codestar-connections:*",
+                                "ec2:DescribeKeyPairs",
+                                "ec2:DescribeVpcs",
+                                "ec2:DescribeSubnets",
+                                "cloud9:DescribeEnvironment*",
+                                "cloud9:ValidateEnvironmentName"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": "*"
+                        },
+                        {
+                            "Action": "sts:AssumeRole",
+                            "Effect": "Allow",
+                            "Resource": [
+                                "${PipelineSourceActionRole.Arn}",
+                                "${PipelineApplicationBuildActionRole.Arn}",
+                                "${PipelineDeployDevActionRole.Arn}",
+                                "arn:aws:iam::${ProductionAccountId}:role/CrossAccountDeploymentRole",
+                                "arn:aws:iam::${DevelopmentAccountId}:role/CrossAccountDeploymentRole"
+                            ]
+                        }
+                    ]
+                }
+
+    PipelineSourceActionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal: 
+                        AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Policies:
+                - 
+                    PolicyName: root
+                    PolicyDocument: !Sub |
+                        {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "s3:GetObject*",
+                                        "s3:GetBucket*",
+                                        "s3:List*",
+                                        "s3:DeleteObject*",
+                                        "s3:PutObject*",
+                                        "s3:Abort*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "arn:aws:s3:::${ArtifactBucketName}",
+                                        "arn:aws:s3:::${ArtifactBucketName}/*"
+                                    ]
+                                },
+                                {
+                                    "Action": [
+                                        "kms:Decrypt",
+                                        "kms:DescribeKey",
+                                        "kms:Encrypt",
+                                        "kms:ReEncrypt*",
+                                        "kms:GenerateDataKey*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "${ArtifactEncryptionKeyArn}"
+                                },
+                                {
+                                    "Action": [
+                                        "codestar:*",
+                                        "codestar-connections:*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "*"
+                                }
+                            ]
+                        }
+
+    PipelineApplicationBuildActionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal: 
+                        AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Policies:
+                - 
+                    PolicyName: root
+                    PolicyDocument: !Sub |
+                        {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "codebuild:BatchGetBuilds",
+                                        "codebuild:StartBuild",
+                                        "codebuild:StopBuild"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "${ApplicationCodeBuildProject.Arn}",
+                                        "${InfrastructureTestCodeBuildProject.Arn}",
+                                        "${FunctionalTestCodeBuildProject.Arn}"
+                                    ]
+                                }
+                            ]
+                        }
+
+    PipelineDeployDevActionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal:
+                        AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                Version: '2012-10-17'
+            Policies:
+                - 
+                    PolicyName: root
+                    PolicyDocument: !Sub |
+                        {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": "iam:PassRole",
+                                    "Effect": "Allow",
+                                    "Resource": "${PipelineDevDeploymentRole.Arn}"
+                                },
+                                {
+                                    "Action": [
+                                        "s3:GetObject*",
+                                        "s3:GetBucket*",
+                                        "s3:List*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "arn:aws:s3:::${ArtifactBucketName}",
+                                        "arn:aws:s3:::${ArtifactBucketName}/*"
+                                    ]
+                                },
+                                {
+                                    "Action": [
+                                        "kms:Decrypt",
+                                        "kms:DescribeKey"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "${ArtifactEncryptionKeyArn}"
+                                },
+                                {
+                                    "Action": [
+                                        "cloudformation:CreateStack",
+                                        "cloudformation:DeleteStack",
+                                        "cloudformation:DescribeStack*",
+                                        "cloudformation:GetStackPolicy",
+                                        "cloudformation:GetTemplate*",
+                                        "cloudformation:SetStackPolicy",
+                                        "cloudformation:UpdateStack",
+                                        "cloudformation:ValidateTemplate"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "arn:aws:cloudformation:${DeploymentRegion}:${AWS::AccountId}:stack/*/*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": "lambda:InvokeFunction",
+                                    "Resource": "arn:aws:lambda:*:${AWS::AccountId}:function:*"
+                                }
+                            ]
+                        }
+
+    PipelineDevDeploymentRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal:
+                        Service: cloudformation.amazonaws.com
+                Version: '2012-10-17'
+            Policies:
+                - 
+                    PolicyName: root
+                    PolicyDocument: !Sub |
+                        {
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "s3:GetObject*",
+                                        "s3:GetBucket*",
+                                        "s3:List*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "arn:aws:s3:::${ArtifactBucketName}",
+                                        "arn:aws:s3:::${ArtifactBucketName}/*"
+                                    ]
+                                },
+                                {
+                                    "Action": [
+                                        "kms:Decrypt",
+                                        "kms:DescribeKey"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "${ArtifactEncryptionKeyArn}"
+                                },
+                                {
+                                    "Action": [
+                                        "lambda:GetLayerVersion"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Action": "*",
+                                    "Effect": "Allow",
+                                    "Resource": "*"
+                                }
+                            ],
+                            "Version": "2012-10-17"
+                        }

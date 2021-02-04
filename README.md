@@ -1,2 +1,5 @@
-# toolbox
-Templates for various applications including .NET and AWS Cloud Formation.
+# Toolbox
+
+Repo contains various AWS and application templates for common development use cases.
+
+- [AWS](AWS/AWS.md)

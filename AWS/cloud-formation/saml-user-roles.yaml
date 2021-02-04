@@ -1,0 +1,70 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create user roles for admins, developers and operations users using SAML as the login type.
+
+Parameters:
+  FederationName:
+    Type: String
+    Description: Name of SAML provider being created in IAM
+  ServiceName:
+    Type: String
+    Description: Name of SAML provider being created in IAM
+
+Resources:
+
+  AdministratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ServiceName}AdministratorAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithSAML
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:saml-provider/${FederationName}
+            Condition:
+              StringEquals:
+                SAML:aud: https://signin.aws.amazon.com/saml
+      Path: '/'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  DeveloperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ServiceName}DeveloperAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithSAML
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:saml-provider/${FederationName}
+            Condition:
+              StringEquals:
+                SAML:aud: https://signin.aws.amazon.com/saml
+      Path: '/'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  OperationsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ServiceName}OperationsAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithSAML
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:saml-provider/${FederationName}
+            Condition:
+              StringEquals:
+                SAML:aud: https://signin.aws.amazon.com/saml
+      Path: '/'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
