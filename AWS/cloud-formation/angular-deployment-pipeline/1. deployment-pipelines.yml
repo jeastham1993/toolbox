@@ -1,0 +1,649 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+    ApplicationBuildSpecPath:
+        Type: String
+        Description: The path to the buildspec file for the main application.
+        Default: buildspec.yaml
+    StagingBuildSpecPath:
+        Type: String
+        Description: The path to the buildspec file for the main application.
+        Default: buildspec-staging.yaml
+    ProductionBuildSpecPath:
+        Type: String
+        Description: The path to the buildspec file for the main application.
+        Default: buildspec-prod.yaml
+    ArtifactBucketName:
+        Type: String
+        Description: Name of the bucket to store code artifacts.
+    ServiceName:
+        Type: String
+        Description: The name of the deployed service.
+    SendReleaseEmailsTo:
+        Type: String
+        Description: The email address release confirmation emails should be sent to.
+    BitbucketConnectionArn:
+        Type: String
+        Description: The ARN of the Bitbucket Codestar connection ARN.
+    BitbucketRepositoryId:
+        Type: String
+        Description: The full repository id of the Bitbucket repo to use.
+    MainBranchName:
+        Type: String
+        Description: The name of the branch to use for production releases.
+        Default: main
+    DevelopmentBranchName:
+        Type: String
+        Description: The name of the branch to use for development releases.
+        Default: development
+    DevelopmentS3Bucket:
+        Type: String
+        Description: The S3 bucket to use for development deployments.
+    StagingS3Bucket:
+        Type: String
+        Description: The S3 bucket to use for staging deployments.
+    ProductionS3Bucket:
+        Type: String
+        Description: The S3 bucket to use for production deployments.
+    DeploymentRegion:
+        Type: String
+        Default: eu-west-2
+        AllowedValues:
+        - eu-west-1
+        - eu-west-2
+
+Resources:
+    ApplicationCodeBuildProject:
+        Type: AWS::CodeBuild::Project
+        Properties:
+            Name: application-build-project
+            Artifacts:
+                Type: CODEPIPELINE
+            Environment:
+                ComputeType: BUILD_GENERAL1_SMALL
+                Image: aws/codebuild/standard:4.0
+                PrivilegedMode: false
+                Type: LINUX_CONTAINER 
+                EnvironmentVariables:
+                - Name: S3_BUCKET
+                  Type: PLAINTEXT
+                  Value: !Sub ${ArtifactBucketName}
+            ServiceRole: !Ref ApplicationCodeBuildProjectRole
+            Source:
+                Type: CODEPIPELINE
+                BuildSpec: !Sub ${ApplicationBuildSpecPath}
+                
+    StagingCodeBuildProject:
+        Type: AWS::CodeBuild::Project
+        Properties:
+            Name: staging-build-project
+            Artifacts:
+                Type: CODEPIPELINE
+            Environment:
+                ComputeType: BUILD_GENERAL1_SMALL
+                Image: aws/codebuild/standard:4.0
+                PrivilegedMode: false
+                Type: LINUX_CONTAINER 
+                EnvironmentVariables:
+                - Name: S3_BUCKET
+                  Type: PLAINTEXT
+                  Value: !Sub ${ArtifactBucketName}
+            ServiceRole: !Ref ApplicationCodeBuildProjectRole
+            Source:
+                Type: CODEPIPELINE
+                BuildSpec: !Sub ${StagingBuildSpecPath}
+                
+    ProductionCodeBuildProject:
+        Type: AWS::CodeBuild::Project
+        Properties:
+            Name: production-build-project
+            Artifacts:
+                Type: CODEPIPELINE
+            Environment:
+                ComputeType: BUILD_GENERAL1_SMALL
+                Image: aws/codebuild/standard:4.0
+                PrivilegedMode: false
+                Type: LINUX_CONTAINER 
+                EnvironmentVariables:
+                - Name: S3_BUCKET
+                  Type: PLAINTEXT
+                  Value: !Sub ${ArtifactBucketName}
+            ServiceRole: !Ref ApplicationCodeBuildProjectRole
+            Source:
+                Type: CODEPIPELINE
+                BuildSpec: !Sub ${ProductionBuildSpecPath}
+                
+
+    ProductionReleasePipeline:
+        Type: AWS::CodePipeline::Pipeline
+        DependsOn:
+            - CrossAccountPipelineRole
+            - CrossAccountPipelineRolePolicy
+        Properties:
+            Name: ProductionReleasePipeline
+            RoleArn: !GetAtt CrossAccountPipelineRole.Arn
+            ArtifactStore:
+                Location: !Ref ArtifactBucketName
+                Type: S3
+            Stages:
+                - 
+                    Name: Source
+                    Actions:
+                        - 
+                            ActionTypeId:
+                                Category: Source
+                                Owner: AWS
+                                Provider: CodeStarSourceConnection
+                                Version: '1'
+                            Configuration:
+                                ConnectionArn: !Ref BitbucketConnectionArn
+                                FullRepositoryId: !Ref BitbucketRepositoryId
+                                BranchName: !Ref MainBranchName
+                                DetectChanges: true
+                            Name: BitbucketSource
+                            OutputArtifacts:
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineSourceActionRole.Arn
+                            RunOrder: 1
+                - 
+                    Name: Build
+                    Actions:
+                        -
+                            Name: BuildStaging
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref StagingCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: StagingBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                        -
+                            Name: BuildProduction
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref ProductionCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: ProductionBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                -
+                    Name: Deploy_Staging
+                    Actions:
+                        - 
+                            Name: Deploy_Staging_Account
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: S3
+                            InputArtifacts:
+                                - Name: StagingBuildOutput
+                            Configuration:
+                                BucketName: !Sub ${StagingS3Bucket}
+                                Extract: true
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: Wait_For_Staging_Approval
+                            ActionTypeId:
+                                Category: Approval
+                                Owner: AWS
+                                Version: "1"
+                                Provider: Manual
+                            Configuration:
+                                NotificationArn: !Ref ReleaseApprovalSnsTopic
+                                CustomData: Please confirm latest production release.
+                            InputArtifacts: []
+                            OutputArtifacts: []
+                            RunOrder: 2
+  
+                -
+                    Name: Deploy_Prod
+                    Actions:
+                        - 
+                            Name: Deploy_To_Production
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: S3
+                            InputArtifacts:
+                                - Name: ProductionBuildOutput
+                            Configuration:
+                                BucketName: !Sub ${ProductionS3Bucket}
+                                Extract: true
+                            OutputArtifacts: []
+                            RunOrder: 1
+    
+    DevelopmentReleasePipeline:
+        Type: AWS::CodePipeline::Pipeline
+        DependsOn:
+            - CrossAccountPipelineRole
+            - CrossAccountPipelineRolePolicy
+        Properties:
+            Name: DevelopmentReleasePipeline
+            RoleArn: !GetAtt CrossAccountPipelineRole.Arn
+            ArtifactStore:
+                Location: !Ref ArtifactBucketName
+                Type: S3
+            Stages:
+                - 
+                    Name: Source
+                    Actions:
+                        - 
+                            ActionTypeId:
+                                Category: Source
+                                Owner: AWS
+                                Provider: CodeStarSourceConnection
+                                Version: '1'
+                            Configuration:
+                                ConnectionArn: !Ref BitbucketConnectionArn
+                                FullRepositoryId: !Ref BitbucketRepositoryId
+                                BranchName: !Ref DevelopmentBranchName
+                                DetectChanges: true
+                            Name: BitbucketSource
+                            OutputArtifacts:
+                                - Name: SourceArtifact
+                            RoleArn: !GetAtt PipelineSourceActionRole.Arn
+                            RunOrder: 1
+                - 
+                    Name: Build
+                    Actions:
+                        -
+                            Name: BuildApplication
+                            ActionTypeId:
+                                Category: Build
+                                Owner: AWS
+                                Provider: CodeBuild
+                                Version: '1'
+                            Configuration:
+                                ProjectName: !Ref ApplicationCodeBuildProject
+                            InputArtifacts:
+                                - Name: SourceArtifact
+                            OutputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
+                            RunOrder: 1
+                -
+                    Name: Deploy_Dev
+                    Actions:
+                        - 
+                            Name: Deploy_to_dev
+                            ActionTypeId:
+                                Category: Deploy
+                                Owner: AWS
+                                Version: "1"
+                                Provider: S3
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            Configuration:
+                                BucketName: !Sub ${DevelopmentS3Bucket}
+                                Extract: true
+                            OutputArtifacts: []
+                            RunOrder: 1
+
+    ############################
+    ###   Release Approval   ###
+    ############################
+    ReleaseApprovalSnsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: "ProductionReleaseApproval"
+        Subscription:
+          - Endpoint: !Sub ${SendReleaseEmailsTo}
+            Protocol: "email"
+
+    #################
+    ###   ROLES   ###
+    #################
+
+    ApplicationCodeBuildProjectRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal:
+                        Service: codebuild.amazonaws.com
+                Version: '2012-10-17'
+
+    ApplicationCodeBuildProjectRolePolicy:
+        Type: AWS::IAM::Policy
+        Properties:
+            PolicyName: !Sub ApplicationCodeBuildProjectRolePolicy-${AWS::StackName}
+            Roles: 
+                - !Ref ApplicationCodeBuildProjectRole
+            PolicyDocument: !Sub |
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": [
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ApplicationCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ApplicationCodeBuildProject}*:*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${StagingCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${StagingCodeBuildProject}*:*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ProductionCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ProductionCodeBuildProject}*:*"
+                            ]
+                        },
+                        {
+                            "Action": [
+                                "s3:GetObject*",
+                                "s3:GetBucket*",
+                                "s3:List*",
+                                "s3:DeleteObject*",
+                                "s3:PutObject*",
+                                "s3:Abort*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": [
+                                "arn:aws:s3:::${ArtifactBucketName}",
+                                "arn:aws:s3:::${ArtifactBucketName}/*",
+                                "arn:aws:s3:::${DevelopmentS3Bucket}",
+                                "arn:aws:s3:::${DevelopmentS3Bucket}/*",
+                                "arn:aws:s3:::${StagingS3Bucket}",
+                                "arn:aws:s3:::${StagingS3Bucket}/*",
+                                "arn:aws:s3:::${ProductionS3Bucket}",
+                                "arn:aws:s3:::${ProductionS3Bucket}/*"
+                            ]
+                        }
+                    ]
+                }
+
+    CrossAccountPipelineRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal:
+                        Service: codepipeline.amazonaws.com
+                Version: '2012-10-17'
+
+    CrossAccountPipelineRolePolicy:
+        Type: AWS::IAM::Policy
+        Properties:
+            PolicyName: !Sub CrossAccountPipelineRolePolicy-${AWS::StackName}
+            Roles: 
+                - !Ref CrossAccountPipelineRole
+            PolicyDocument: !Sub |
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": [
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ApplicationCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ApplicationCodeBuildProject}*:*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${StagingCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${StagingCodeBuildProject}*:*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ProductionCodeBuildProject}*",
+                                "arn:aws:logs:${DeploymentRegion}:${AWS::AccountId}:log-group:/aws/codebuild/${ProductionCodeBuildProject}*:*"
+                            ]
+                        },
+                        {
+                            "Action": [
+                                "s3:GetObject*",
+                                "s3:GetBucket*",
+                                "s3:List*",
+                                "s3:DeleteObject*",
+                                "s3:PutObject*",
+                                "s3:Abort*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": [
+                                "arn:aws:s3:::${ArtifactBucketName}",
+                                "arn:aws:s3:::${ArtifactBucketName}/*",
+                                "arn:aws:s3:::${DevelopmentS3Bucket}",
+                                "arn:aws:s3:::${DevelopmentS3Bucket}/*",
+                                "arn:aws:s3:::${StagingS3Bucket}",
+                                "arn:aws:s3:::${StagingS3Bucket}/*",
+                                "arn:aws:s3:::${ProductionS3Bucket}",
+                                "arn:aws:s3:::${ProductionS3Bucket}/*"
+                            ]
+                        },
+                        {
+                            "Action": [
+                                "codestar:*",
+                                "codestar-connections:*",
+                                "ec2:DescribeKeyPairs",
+                                "ec2:DescribeVpcs",
+                                "ec2:DescribeSubnets",
+                                "cloud9:DescribeEnvironment*",
+                                "cloud9:ValidateEnvironmentName",
+                                "sns:Publish"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": "*"
+                        },
+                        {
+                            "Action": "sts:AssumeRole",
+                            "Effect": "Allow",
+                            "Resource": [
+                                "${PipelineSourceActionRole.Arn}",
+                                "${PipelineApplicationBuildActionRole.Arn}",
+                                "${PipelineDeployDevActionRole.Arn}"
+                            ]
+                        }
+                    ]
+                }
+
+    PipelineSourceActionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal: 
+                        AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Policies:
+                - 
+                    PolicyName: root
+                    PolicyDocument: !Sub |
+                        {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "s3:GetObject*",
+                                        "s3:GetBucket*",
+                                        "s3:List*",
+                                        "s3:DeleteObject*",
+                                        "s3:PutObject*",
+                                        "s3:Abort*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "arn:aws:s3:::${ArtifactBucketName}",
+                                        "arn:aws:s3:::${ArtifactBucketName}/*",
+                                        "arn:aws:s3:::${DevelopmentS3Bucket}",
+                                        "arn:aws:s3:::${DevelopmentS3Bucket}/*",
+                                        "arn:aws:s3:::${StagingS3Bucket}",
+                                        "arn:aws:s3:::${StagingS3Bucket}/*",
+                                        "arn:aws:s3:::${ProductionS3Bucket}",
+                                        "arn:aws:s3:::${ProductionS3Bucket}/*"
+                                    ]
+                                },
+                                {
+                                    "Action": [
+                                        "codestar:*",
+                                        "codestar-connections:*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "*"
+                                }
+                            ]
+                        }
+
+    PipelineApplicationBuildActionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal: 
+                        AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Policies:
+                - 
+                    PolicyName: root
+                    PolicyDocument: !Sub |
+                        {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "codebuild:BatchGetBuilds",
+                                        "codebuild:StartBuild",
+                                        "codebuild:StopBuild"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "${ApplicationCodeBuildProject.Arn}",
+                                        "${StagingCodeBuildProject.Arn}",
+                                        "${ProductionCodeBuildProject.Arn}"
+                                    ]
+                                }
+                            ]
+                        }
+
+    PipelineDeployDevActionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal:
+                        AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                Version: '2012-10-17'
+            Policies:
+                - 
+                    PolicyName: root
+                    PolicyDocument: !Sub |
+                        {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": "iam:PassRole",
+                                    "Effect": "Allow",
+                                    "Resource": "${PipelineDevDeploymentRole.Arn}"
+                                },
+                                {
+                                    "Action": [
+                                        "s3:GetObject*",
+                                        "s3:GetBucket*",
+                                        "s3:List*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "arn:aws:s3:::${ArtifactBucketName}",
+                                        "arn:aws:s3:::${ArtifactBucketName}/*",
+                                        "arn:aws:s3:::${DevelopmentS3Bucket}",
+                                        "arn:aws:s3:::${DevelopmentS3Bucket}/*",
+                                        "arn:aws:s3:::${StagingS3Bucket}",
+                                        "arn:aws:s3:::${StagingS3Bucket}/*",
+                                        "arn:aws:s3:::${ProductionS3Bucket}",
+                                        "arn:aws:s3:::${ProductionS3Bucket}/*"
+                                    ]
+                                },
+                                {
+                                    "Action": [
+                                        "cloudformation:CreateStack",
+                                        "cloudformation:DeleteStack",
+                                        "cloudformation:DescribeStack*",
+                                        "cloudformation:GetStackPolicy",
+                                        "cloudformation:GetTemplate*",
+                                        "cloudformation:SetStackPolicy",
+                                        "cloudformation:UpdateStack",
+                                        "cloudformation:ValidateTemplate"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "arn:aws:cloudformation:${DeploymentRegion}:${AWS::AccountId}:stack/*/*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": "lambda:InvokeFunction",
+                                    "Resource": "arn:aws:lambda:*:${AWS::AccountId}:function:*"
+                                }
+                            ]
+                        }
+
+    PipelineDevDeploymentRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    Action: sts:AssumeRole
+                    Effect: Allow
+                    Principal:
+                        Service: cloudformation.amazonaws.com
+                Version: '2012-10-17'
+            Policies:
+                - 
+                    PolicyName: root
+                    PolicyDocument: !Sub |
+                        {
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "s3:GetObject*",
+                                        "s3:GetBucket*",
+                                        "s3:List*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "arn:aws:s3:::${ArtifactBucketName}",
+                                        "arn:aws:s3:::${ArtifactBucketName}/*",
+                                        "arn:aws:s3:::${DevelopmentS3Bucket}",
+                                        "arn:aws:s3:::${DevelopmentS3Bucket}/*",
+                                        "arn:aws:s3:::${StagingS3Bucket}",
+                                        "arn:aws:s3:::${StagingS3Bucket}/*",
+                                        "arn:aws:s3:::${ProductionS3Bucket}",
+                                        "arn:aws:s3:::${ProductionS3Bucket}/*"
+                                    ]
+                                },
+                                {
+                                    "Action": [
+                                        "lambda:GetLayerVersion"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Action": "*",
+                                    "Effect": "Allow",
+                                    "Resource": "*"
+                                }
+                            ],
+                            "Version": "2012-10-17"
+                        }

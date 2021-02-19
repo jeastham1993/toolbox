@@ -529,12 +529,12 @@ Resources:
                             Configuration:
                                 ActionMode: CREATE_UPDATE
                                 Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
-                                StackName: !Sub ${ServiceName}-dev-${DeploymentRegion}
+                                StackName: !Sub ${ServiceName}-alpha-${DeploymentRegion}
                                 RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
                                 TemplatePath: !Sub 'ApplicationBuildOutput::${ApplicationBuildOutputTemplate}'
                                 ParameterOverrides: !Sub | 
                                     { 
-                                        "ApplicationEnvironment": "dev"
+                                        "ApplicationEnvironment": "alpha"
                                     }
                             OutputArtifacts: []
                             RunOrder: 1
@@ -552,12 +552,12 @@ Resources:
                             Configuration:
                                 ActionMode: CREATE_UPDATE
                                 Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
-                                StackName: !Sub ${ServiceName}-infra-test-dev-${DeploymentRegion}
+                                StackName: !Sub ${ServiceName}-infra-test-alpha-${DeploymentRegion}
                                 RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
                                 TemplatePath: !Sub 'InfrastructureTestBuildOutput::${InfrastructureTestBuildOutputTemplate}'
                                 ParameterOverrides: !Sub | 
                                     { 
-                                        "ApplicationEnvironment": "dev"
+                                        "ApplicationEnvironment": "alpha"
                                     }
                             OutputArtifacts: []
                             RunOrder: 1
@@ -575,7 +575,7 @@ Resources:
                                 - Name: ApplicationBuildOutput
                             RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
                             Configuration:
-                                FunctionName: !Sub dev-${InfrastructureTestFunctionName}
+                                FunctionName: !Sub alpha-${InfrastructureTestFunctionName}
                             OutputArtifacts: []
                             RunOrder: 1
                         - 
@@ -589,7 +589,7 @@ Resources:
                                 - Name: ApplicationBuildOutput
                             RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
                             Configuration:
-                                FunctionName: !Sub dev-${FunctionalTestFunctionName}
+                                FunctionName: !Sub alpha-${FunctionalTestFunctionName}
                             OutputArtifacts: []
                             RunOrder: 1
                 -
@@ -608,7 +608,7 @@ Resources:
                             RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
                             Configuration:
                                 ActionMode: DELETE_ONLY
-                                StackName: !Sub ${ServiceName}-dev-${DeploymentRegion}
+                                StackName: !Sub ${ServiceName}-alpha-${DeploymentRegion}
                                 RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
                             OutputArtifacts: []
                             RunOrder: 1
@@ -625,7 +625,7 @@ Resources:
                             RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
                             Configuration:
                                 ActionMode: DELETE_ONLY
-                                StackName: !Sub ${ServiceName}--infra-test-dev-${DeploymentRegion}
+                                StackName: !Sub ${ServiceName}--infra-test-alpha-${DeploymentRegion}
                                 RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
                             OutputArtifacts: []
                             RunOrder: 1
@@ -831,7 +831,8 @@ Resources:
                                 "ec2:DescribeVpcs",
                                 "ec2:DescribeSubnets",
                                 "cloud9:DescribeEnvironment*",
-                                "cloud9:ValidateEnvironmentName"
+                                "cloud9:ValidateEnvironmentName",
+                                "sns:Publish",
                             ],
                             "Effect": "Allow",
                             "Resource": "*"
