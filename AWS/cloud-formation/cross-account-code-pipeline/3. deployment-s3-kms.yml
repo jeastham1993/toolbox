@@ -42,21 +42,10 @@ Parameters:
     MaxLength: 12
 
 Resources:
-  DeploymentArtifactS3Bucket:
-    Type: 'AWS::S3::Bucket'
-    Properties:
-      BucketName: !Sub ${DeploymentArtifactBucketName}
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: 'aws:kms'
-              KMSMasterKeyID: !Ref BucketEncryptionKey
-    DeletionPolicy: Delete
-
   DeploymentArtifactBucketPolicy:
     Type: 'AWS::S3::BucketPolicy'
     Properties:
-      Bucket: !Ref DeploymentArtifactS3Bucket
+      Bucket: !Sub ${DeploymentArtifactBucketName}
       PolicyDocument:
         Statement:
           - Action:
@@ -66,7 +55,7 @@ Resources:
             Resource: !Join
               - ''
               - - 'arn:aws:s3:::'
-                - !Ref DeploymentArtifactS3Bucket
+                - !Sub ${DeploymentArtifactBucketName}
             Principal:
               AWS:
               - !Sub "arn:aws:iam::${DevAccountId}:root"
@@ -77,38 +66,9 @@ Resources:
             Resource: !Join
               - ''
               - - 'arn:aws:s3:::'
-                - !Ref DeploymentArtifactS3Bucket
+                - !Sub ${DeploymentArtifactBucketName}
                 - /*
             Principal:
               AWS:
               - !Sub "arn:aws:iam::${DevAccountId}:root"
               - !Sub "arn:aws:iam::${ProductionAccountId}:root"
-
-  BucketEncryptionKey:
-    Type: AWS::KMS::Key
-    Properties:
-      EnableKeyRotation: false
-      Description: EncryptionKeyForBucket
-      KeyPolicy:
-        Version: '2012-10-17'
-        Id: key-policy
-        Statement:
-        - Sid: Enable IAM User Permissions
-          Effect: Allow
-          Principal:
-            AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
-          Action: kms:*
-          Resource: '*'
-        - Sid: Allow Dev and Prod Access
-          Effect: Allow
-          Principal:
-            AWS:
-            - !Sub arn:aws:iam::${DevAccountId}:role/CrossAccountCloudFormationExecutionRole
-            - !Sub arn:aws:iam::${DevAccountId}:role/CrossAccountDeploymentRole
-            - !Sub arn:aws:iam::${ProductionAccountId}:role/CrossAccountCloudFormationExecutionRole
-            - !Sub arn:aws:iam::${ProductionAccountId}:role/CrossAccountDeploymentRole
-          Action:
-          - kms:Decrypt
-          - kms:DescribeKey
-          Resource: '*'
-  

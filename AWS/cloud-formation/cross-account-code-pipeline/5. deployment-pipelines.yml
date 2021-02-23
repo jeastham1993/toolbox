@@ -832,7 +832,7 @@ Resources:
                                 "ec2:DescribeSubnets",
                                 "cloud9:DescribeEnvironment*",
                                 "cloud9:ValidateEnvironmentName",
-                                "sns:Publish",
+                                "sns:Publish"
                             ],
                             "Effect": "Allow",
                             "Resource": "*"
