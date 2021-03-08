@@ -49,6 +49,10 @@ Parameters:
         Type: String
         Description: The name of the lambda function to use when executing infrastructure tests.
         Default: InfrastructureTestFunction
+    SecurityTestFunctionName:
+        Type: String
+        Description: The name of the lambda function to use when executing security tests.
+        Default: SecurityTestFunction
     FunctionalTestFunctionName:
         Type: String
         Description: The name of the lambda function to use when executing functional tests.
@@ -291,7 +295,7 @@ Resources:
                             OutputArtifacts: []
                             RunOrder: 1
                         - 
-                            Name: ExecuteFunctionalTests
+                            Name: ExecuteSecurityTests
                             ActionTypeId:
                                 Category: Invoke
                                 Owner: AWS
@@ -301,7 +305,7 @@ Resources:
                                 - Name: ApplicationBuildOutput
                             RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
                             Configuration:
-                                FunctionName: !Sub beta-${FunctionalTestFunctionName}
+                                FunctionName: !Sub beta-${SecurityTestFunctionName}
                             OutputArtifacts: []
                             RunOrder: 1
                 -
@@ -368,25 +372,19 @@ Resources:
                             OutputArtifacts: []
                             RunOrder: 1
                         - 
-                            Name: Deploy_Functional_Tests
+                            Name: Execute_Functional_Tests
                             ActionTypeId:
-                                Category: Deploy
+                                Category: Invoke
                                 Owner: AWS
                                 Version: "1"
-                                Provider: CloudFormation
+                                Provider: StepFunctions
                             InputArtifacts:
-                                - Name: FunctionalTestBuildOutput
+                                - Name: ApplicationBuildOutput
                             RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
                             Configuration:
-                                ActionMode: CREATE_UPDATE
-                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
-                                StackName: !Sub ${ServiceName}-functional-tests-staging-${DeploymentRegion}
-                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
-                                TemplatePath: !Sub 'FunctionalTestBuildOutput::${FunctionalTestBuildOutputTemplate}'
-                                ParameterOverrides: !Sub | 
-                                    { 
-                                        "ApplicationEnvironment": "staging"
-                                    }
+                                StateMachineArn: !Sub arn:aws:states:eu-west-2:${AWS::AccountId}:stateMachine:FunctionalTestStateMachine
+                                ExecutionNamePrefix: staging
+                                Input: '{"env": "staging"}'
                             OutputArtifacts: []
                             RunOrder: 1
                         - 
@@ -427,6 +425,22 @@ Resources:
                                     { 
                                         "ApplicationEnvironment": "production"
                                     }
+                            OutputArtifacts: []
+                            RunOrder: 1
+                        - 
+                            Name: Execute_Functional_Tests
+                            ActionTypeId:
+                                Category: Invoke
+                                Owner: AWS
+                                Version: "1"
+                                Provider: StepFunctions
+                            InputArtifacts:
+                                - Name: ApplicationBuildOutput
+                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
+                            Configuration:
+                                StateMachineArn: !Sub production-${FunctionalTestFunctionName}
+                                ExecutionNamePrefix: production
+                                Input: '{"env": "prod"}'
                             OutputArtifacts: []
                             RunOrder: 1
     
@@ -497,21 +511,6 @@ Resources:
                                 - Name: InfrastructureTestBuildOutput
                             RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
                             RunOrder: 1
-                        -
-                            Name: BuildFunctionalTests
-                            ActionTypeId:
-                                Category: Build
-                                Owner: AWS
-                                Provider: CodeBuild
-                                Version: '1'
-                            Configuration:
-                                ProjectName: !Ref FunctionalTestCodeBuildProject
-                            InputArtifacts:
-                                - Name: SourceArtifact
-                            OutputArtifacts:
-                                - Name: FunctionalTestBuildOutput
-                            RoleArn: !GetAtt PipelineApplicationBuildActionRole.Arn
-                            RunOrder: 1
                 -
                     Name: Deploy_Alpha
                     Actions:
@@ -579,7 +578,7 @@ Resources:
                             OutputArtifacts: []
                             RunOrder: 1
                         - 
-                            Name: ExecuteFunctionalTests
+                            Name: ExecuteSecurityTests
                             ActionTypeId:
                                 Category: Invoke
                                 Owner: AWS
@@ -589,7 +588,7 @@ Resources:
                                 - Name: ApplicationBuildOutput
                             RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
                             Configuration:
-                                FunctionName: !Sub alpha-${FunctionalTestFunctionName}
+                                FunctionName: !Sub alpha-${SecurityTestFunctionName}
                             OutputArtifacts: []
                             RunOrder: 1
                 -
@@ -649,29 +648,6 @@ Resources:
                                 StackName: !Sub ${ServiceName}-dev-${DeploymentRegion}
                                 RoleArn: !Sub arn:aws:iam::${DevelopmentAccountId}:role/CrossAccountCloudFormationExecutionRole
                                 TemplatePath: !Sub 'ApplicationBuildOutput::${ApplicationBuildOutputTemplate}'
-                                ParameterOverrides: !Sub | 
-                                    { 
-                                        "ApplicationEnvironment": "dev"
-                                    }
-                            OutputArtifacts: []
-                            RunOrder: 1
-
-                        - 
-                            Name: Deploy_Dev_Functional_Tests
-                            ActionTypeId:
-                                Category: Deploy
-                                Owner: AWS
-                                Version: "1"
-                                Provider: CloudFormation
-                            InputArtifacts:
-                                - Name: FunctionalTestBuildOutput
-                            RoleArn: !GetAtt PipelineDeployDevActionRole.Arn
-                            Configuration:
-                                ActionMode: CREATE_UPDATE
-                                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
-                                StackName: !Sub ${ServiceName}-functional-tests-dev-${DeploymentRegion}
-                                RoleArn: !GetAtt PipelineDevDeploymentRole.Arn
-                                TemplatePath: !Sub 'FunctionalTestBuildOutput::${FunctionalTestBuildOutputTemplate}'
                                 ParameterOverrides: !Sub | 
                                     { 
                                         "ApplicationEnvironment": "dev"
@@ -756,6 +732,41 @@ Resources:
                                 "arn:aws:s3:::${ArtifactBucketName}",
                                 "arn:aws:s3:::${ArtifactBucketName}/*"
                             ]
+                        },
+                        {
+                            "Action": [
+                                "states:*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": "*"
+                        },
+                        {
+                            "Action": [
+                                "cloudformation:*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": "*"
+                        },
+                        {
+                            "Action": [
+                                "lambda:*"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": "*"
+                        },
+                        {
+                            "Action": [
+                                "iam:GetRole",
+                                "iam:CreateRole",
+                                "iam:DeleteRole",
+                                "iam:AttachRolePolicy",
+                                "iam:DetachRolePolicy",
+                                "iam:DeleteRolePolicy",
+                                "iam:PutRolePolicy",
+                                "iam:PassRole"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": "*"
                         }
                     ]
                 }
@@ -971,6 +982,13 @@ Resources:
                                         "arn:aws:s3:::${ArtifactBucketName}",
                                         "arn:aws:s3:::${ArtifactBucketName}/*"
                                     ]
+                                },
+                                {
+                                    "Action": [
+                                        "states:*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "*"
                                 },
                                 {
                                     "Action": [
